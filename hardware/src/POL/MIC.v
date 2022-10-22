@@ -21,6 +21,7 @@ module MIC #(
     )(
     input                                                           clk                     ,
     input                                                           rst_n                   ,
+    input                                                           MIFMIC_Rst,
 
     // Configure
     input       [POOL_CORE                                  -1 : 0] POLMIF_AddrVld,
@@ -46,7 +47,7 @@ module MIC #(
 //=====================================================================================================================
 // Variable Definition :
 //=====================================================================================================================
-reg [$clog2(POOL_CORE)      -1 : 0] arb_port;
+wire [$clog2(POOL_CORE)      -1 : 0] arb_port;
 wire[$clog2(POOL_CORE)      -1 : 0] rd_port;
 reg [$clog2(POOL_CORE)      -1 : 0] rd_port_d;
 wire[POOL_CORE              -1 : 0] gnt;
@@ -73,7 +74,7 @@ FIFO_FWFT#(
     .INITIALIZE_FIFO ( "no"                     )
 )U0_FIFO_FWFT_OUT(
     .clk        ( clk                               ),
-    .Reset      ( 1'b0                              ),
+    .Reset      ( MIFMIC_Rst                              ),
     .rst_n      ( rst_n                             ),
     .push       ( GLBMIF_OfmVld &  MIFGLB_OfmRdy    ),
     .pop        ( MICMIF_OfmVld & MIFMIC_OfmRdy   ),
@@ -94,7 +95,7 @@ FIFO_FWFT#(
     .INITIALIZE_FIFO ( "no"                     )
 )U0_FIFO_FWFT_CMD(
     .clk        ( clk                                                       ),
-    .Reset      ( 1'b0                                                      ),
+    .Reset      ( MIFMIC_Rst                                                      ),
     .rst_n      ( rst_n                                                     ),
     .push       ( POLMIF_AddrVld[arb_port] & MIFPOL_Rdy[arb_port]           ), 
     .pop        ( MIFGLB_AddrVld & GLBMIF_AddrRdy                           ),
@@ -114,21 +115,13 @@ prior_arb#(
 )u_prior_arb(
     .req ( POLMIF_AddrVld   ),
     .gnt ( gnt              ), // 010000
-    .arb_port(              )
+    .arb_port( arb_port             )
 );
-
-integer i;
-always @(*) begin
-    arb_port = 0;
-    for(i=0; i<POOL_CORE; i=i+1) begin
-        if(gnt[i]) begin
-            arb_port |= i;
-        end
-    end
-end 
 
 always @ ( posedge clk or negedge rst_n ) begin
     if ( !rst_n ) begin
+        rd_port_d <= 0;
+    end else if(MIFMIC_Rst) begin
         rd_port_d <= 0;
     end else if (MIFGLB_AddrVld & GLBMIF_AddrRdy) begin
         rd_port_d <= rd_port;
