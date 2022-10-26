@@ -19,7 +19,8 @@ module KNN #(
     parameter CRD_WIDTH         = 16,
     parameter CRD_DIM           = 3, 
     parameter DISTSQR_WIDTH     =  $clog2( CRD_WIDTH*2*$clog2(CRD_DIM) ),
-    parameter NUM_SORT_CORE     = 8
+    parameter NUM_SORT_CORE     = 8,
+    parameter MASK_ADDR_WIDTH = $clog2(2**IDX_WIDTH*NUM_SORT_CORE/SRAM_WIDTH)
     )(
     input                               clk  ,
     input                               rst_n,
@@ -39,9 +40,13 @@ module KNN #(
     input                               GLBKNN_CrdVld,     
     output                              KNNGLB_CrdRdy,
 
-    input  [2**IDX_WIDTH        -1 : 0] FPSPSS_Mask,
-    input                               FPSPSS_MaskVld,
-    output                              PSSFPS_MaskRdy,
+    output  [MASK_ADDR_WIDTH        -1 : 0] PSSGLB_MaskRdAddr,
+    output                                  PSSGLB_MaskRdAddrVld,
+    input                                   GLBPSS_MaskRdAddrRdy,
+    input   [SRAM_WIDTH             -1 : 0] GLBPSS_MaskDatOut,
+    input                                   GLBPSS_MaskDatOutVld,
+    output                                  PSSGLB_MaskDatRdy,
+
     // Output Map of KNN
     output [SRAM_WIDTH          -1 : 0 ]PSSCTR_Map,   
     output                              PSSCTR_MapVld,     
@@ -84,7 +89,9 @@ wire                            LopLast;
 reg                             KNNPSS_LopVld;
 wire                            PSSKNN_LopRdy;
 wire [IDX_WIDTH         -1 : 0] LopIdx;
-
+reg  [$clog2(SRAM_WIDTH/NUM_SORT_CORE) -1 : 0] MaskRAMByteIdx;
+reg  [$clog2(SRAM_WIDTH/NUM_SORT_CORE) -1 : 0] MaskRAMByteIdx_s1;
+reg  [$clog2(SRAM_WIDTH/NUM_SORT_CORE) -1 : 0] MaskRAMByteIdx_s2;
 //=====================================================================================================================
 // Logic Design 1: FSM
 //=====================================================================================================================
@@ -162,6 +169,17 @@ counter#( // Pipe S0
     .UNDERFLOW (                    ),
     .COUNT     ( LopIdx             )
 );
+
+always @(posedge clk or negedge rst_n) begin
+    if(!rst_n) begin
+        MaskRAMByteIdx <= 0;
+    end else if( CCUCTR_Rst ) begin
+        MaskRAMByteIdx <= 0;
+    end else if( INC_LopIdx) begin
+        MaskRAMByteIdx <= MaskRAMByteIdx + 1; // Loop
+    end
+end
+
 assign INC_LopIdx = KNNGLB_CrdAddrVld & GLBKNN_CrdAddrRdy ;
 
 assign KNNGLB_CrdAddr = state == CP ? CpIdx : LopIdx;
@@ -171,9 +189,9 @@ assign KNNGLB_CrdAddrVld = state == CP | state == LP;
 //=====================================================================================================================
 always @(posedge clk or negedge rst_n) begin: Pipe1
     if(!rst_n) begin
-        {KNNGLB_CrdAddr_s1, LopLast_s1} <= 0;
+        {MaskRAMByteIdx_s1, KNNGLB_CrdAddr_s1, LopLast_s1} <= 0;
     end else if (KNNGLB_CrdAddrVld & GLBKNN_CrdAddrRdy) begin
-        {KNNGLB_CrdAddr_s1, LopLast_s1} <= {KNNGLB_CrdAddr, LopLast};
+        {MaskRAMByteIdx_s1, KNNGLB_CrdAddr_s1, LopLast_s1} <= {MaskRAMByteIdx, KNNGLB_CrdAddr, LopLast};
     end
 end
 
@@ -192,9 +210,9 @@ end
 
 always @(posedge clk or negedge rst_n) begin: Pipe2_LopCrd_s2
     if(!rst_n) begin
-        {LopCrd_s2, LopIdx_s2, LopLast_s2} <= 0;
+        {MaskRAMByteIdx_s2, LopCrd_s2, LopIdx_s2, LopLast_s2} <= 0;
     end else if (GLBKNN_CrdVld & KNNGLB_CrdRdy) begin
-        {LopCrd_s2, LopIdx_s2, LopLast_s2} <= {GLBKNN_Crd, KNNGLB_CrdAddr_s1, LopLast_s1};
+        {MaskRAMByteIdx_s2, LopCrd_s2, LopIdx_s2, LopLast_s2} <= {MaskRAMByteIdx_s1, GLBKNN_Crd, KNNGLB_CrdAddr_s1, LopLast_s1};
     end
 end
 
@@ -231,16 +249,20 @@ PSS#(
     .rst_n           ( rst_n            ),
     .KNNPSS_LopLast  ( KNNPSS_LopLast_s2),
     .KNNPSS_Rst      ( CCUCTR_Rst      ),
-    .FPSPSS_Mask     ( FPSPSS_Mask     ),
-    .FPSPSS_MaskVld  ( FPSPSS_MaskVld  ),
-    .PSSFPS_MaskRdy  ( PSSFPS_MaskRdy  ),
     .KNNPSS_CpIdx    ( CpIdx           ),
-    .KNNPSS_Lop      ( {LopDist_s2, LopIdx_s2 }),// {idx, dist} 
+    .KNNPSS_Lop      ( {MaskRAMByteIdx_s2, LopDist_s2,  LopIdx_s2 }),// {idx, dist} 
     .KNNPSS_LopVld   ( KNNPSS_LopVld   ),
     .PSSKNN_LopRdy   ( PSSKNN_LopRdy   ),
+    .PSSGLB_MaskRdAddr      ( PSSGLB_MaskRdAddr    ),
+    .PSSGLB_MaskRdAddrVld   ( PSSGLB_MaskRdAddrVld ),
+    .GLBPSS_MaskRdAddrRdy   ( GLBPSS_MaskRdAddrRdy ),
+    .GLBPSS_MaskDatOut      ( GLBPSS_MaskDatOut    ),
+    .GLBPSS_MaskDatOutVld   ( GLBPSS_MaskDatOutVld ),
+    .PSSGLB_MaskDatRdy      ( PSSGLB_MaskDatRdy    ),
     .PSSCTR_Map      ( PSSCTR_Map      ),
     .PSSCTR_MapVld   ( PSSCTR_MapVld   ),
     .CTRPSS_MapRdy   ( CTRPSS_MapRdy   )
 );
+
 
 endmodule

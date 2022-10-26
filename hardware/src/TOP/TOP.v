@@ -24,8 +24,8 @@ module TOP #(
     parameter ISA_SRAM_WORD  = 64,
     parameter ITF_NUM_RDPORT = 2,  
     parameter ITF_NUM_WRPORT = 5, // + CCU
-    parameter GLB_NUM_RDPORT = 13,    
-    parameter GLB_NUM_WRPORT = 8, 
+    parameter GLB_NUM_RDPORT = 15,    
+    parameter GLB_NUM_WRPORT = 9, 
     parameter MAXPAR         = 32,
     parameter NUM_BANK       = 32,
     parameter POOL_CORE      = 6,
@@ -43,7 +43,9 @@ module TOP #(
 
     parameter SYA_NUM_ROW    = 16,
     parameter SYA_NUM_COL    = 16,
-    parameter SYA_NUM_BANK   = 4
+    parameter SYA_NUM_BANK   = 4,
+    parameter QNTSL_WIDTH    = 20,
+    parameter MASK_ADDR_WIDTH = $clog2(2**IDX_WIDTH*NUM_SORT_CORE/SRAM_WIDTH)
 
     )(
     input                           I_SysRst_n    , 
@@ -69,6 +71,7 @@ localparam GLBWRIDX_SYAOFM = 4;
 localparam GLBWRIDX_POLOFM = 5;
 localparam GLBWRIDX_CTRDST = 6;
 localparam GLBWRIDX_CTRMAP = 7;
+localparam GLBWRIDX_CTRFMK = 8; // FPS Writes Mask
 
 localparam GLBRDIDX_ITFMAP = 0;
 localparam GLBRDIDX_ITFOFM = 1;
@@ -76,8 +79,10 @@ localparam GLBRDIDX_SYAACT = 2;
 localparam GLBRDIDX_SYAWGT = 3;
 localparam GLBRDIDX_CTRCRD = 4;
 localparam GLBRDIDX_CTRDST = 5;
-localparam GLBRDIDX_POLMAP = 6;
-localparam GLBRDIDX_POLOFM = 7;
+localparam GLBRDIDX_CTRFMK = 6; // FPS Read MASK
+localparam GLBRDIDX_CTRKMK = 7; // KNN Read MASK
+localparam GLBRDIDX_POLMAP = 8;
+localparam GLBRDIDX_POLOFM = 9;
 
 
 localparam DISTSQR_WIDTH     =  $clog2( CRD_WIDTH*2*$clog2(CRD_DIM) );
@@ -133,7 +138,7 @@ wire                                              SYACCU_CfgRdy;
 wire  [2                                  -1 : 0] CCUSYA_CfgMod;
 wire  [IDX_WIDTH                          -1 : 0] CCUSYA_CfgNip; 
 wire  [CHN_WIDTH                          -1 : 0] CCUSYA_CfgChi;         
-wire  [20                                 -1 : 0] CCUSYA_CfgScale;        
+wire  [QNTSL_WIDTH                        -1 : 0] CCUSYA_CfgScale;        
 wire  [ACT_WIDTH                          -1 : 0] CCUSYA_CfgShift;        
 wire  [ACT_WIDTH                          -1 : 0] CCUSYA_CfgZp;
 wire                                              CCUPOL_Rst;
@@ -142,6 +147,8 @@ wire                                              POLCCU_CfgRdy;
 wire  [MAP_WIDTH                          -1 : 0] CCUPOL_CfgK;
 wire  [IDX_WIDTH                          -1 : 0] CCUPOL_CfgNip;
 wire  [CHN_WIDTH                          -1 : 0] CCUPOL_CfgChi;
+wire  [IDX_WIDTH*POOL_CORE                -1 : 0] CCUPOL_AddrMin;
+wire  [IDX_WIDTH*POOL_CORE                -1 : 0] CCUPOL_AddrMax;
 wire                                              CCUCTR_Rst;
 wire                                              CCUCTR_CfgVld;
 wire                                              CTRCCU_CfgRdy;
@@ -200,11 +207,31 @@ wire [SRAM_WIDTH          -1 : 0 ]CTRGLB_Map;
 wire                              CTRGLB_MapVld;     
 wire                              GLBCTR_MapRdy; 
 
+wire [MASK_ADDR_WIDTH    -1 : 0] KNNGLB_MaskRdAddr;
+wire                             KNNGLB_MaskRdAddrVld;
+wire                             GLBKNN_MaskRdAddrRdy;
+wire [SRAM_WIDTH         -1 : 0] GLBKNN_MaskRdDat;
+wire                             GLBKNN_MaskRdDatVld;
+wire                             KNNGLB_MaskRdDatRdy;
+    // Input Mask Bit
+wire [MASK_ADDR_WIDTH    -1 : 0] FPSGLB_MaskRdAddr;
+wire                             FPSGLB_MaskRdAddrVld;
+wire                             GLBFPS_MaskRdAddrRdy;
+wire [SRAM_WIDTH         -1 : 0] GLBFPS_MaskRdDat;
+wire                             GLBFPS_MaskRdDatVld; // Not Used
+wire                             FPSGLB_MaskRdDatRdy;  
+
+    // Output Mask Bit
+wire [MASK_ADDR_WIDTH     -1 : 0] FPSGLB_MaskWrAddr;
+wire [SRAM_WIDTH          -1 : 0] FPSGLB_MaskWrBitEn;
+wire                              FPSGLB_MaskWrDatVld;
+wire [SRAM_WIDTH          -1 : 0] FPSGLB_MaskWrDat;
+wire                              GLBFPS_MaskWrDatRdy;  // Not Used
 
 // SYA
 wire [SRAM_BYTE_WIDTH*SYA_NUM_ROW*SYA_NUM_COL*SYA_NUM_BANK/16   -1 : 0] SYAGLB_Ofm;
-wire                                                                    SYAGLB_OfmVld;
-wire                                                                    GLBSYA_OfmRdy;
+wire [SYA_NUM_BANK                                              -1 : 0] SYAGLB_OfmVld;
+wire [SYA_NUM_BANK                                              -1 : 0] GLBSYA_OfmRdy;
 wire [SRAM_BYTE_WIDTH*SYA_NUM_ROW*SYA_NUM_BANK                  -1 : 0] GLBSYA_Act;
 wire                                                                    GLBSYA_ActVld;
 wire                                                                    SYAGLB_ActRdy ;
@@ -299,7 +326,7 @@ assign TOPITF_DatVld    = RdPortDatVld[0 +: 2];
 // assign TOPITF_DatLast   = RdPortDatLast[0 +: 2];
 assign RdPortDatRdy[0 +: 2] = ITFTOP_DatRdy;
 
-assign {WrPortDat[SRAM_WIDTH*0 +: SRAM_WIDTH*4], ITFCCU_Dat}= ITFTOP_Dat;
+assign {WrPortDat[ (SRAM_WIDTH*MAXPAR)*0 +:  (SRAM_WIDTH*MAXPAR)*4], ITFCCU_Dat}= ITFTOP_Dat;
 assign {WrPortDatVld[0 +: 4], ITFCCU_DatVld}                = ITFTOP_DatVld;
 assign {WrPortDatLast[0 +: 4], ITFCCU_DatLast}              = ITFTOP_DatLast;
 assign TOPITF_DatRdy                                        = {WrPortDatRdy[0 +: 4], CCUITF_DatRdy};
@@ -317,6 +344,7 @@ CCU#(
     .GLB_NUM_WRPORT          ( GLB_NUM_WRPORT   ),
     .IDX_WIDTH               ( IDX_WIDTH        ),
     .CHN_WIDTH               ( CHN_WIDTH        ),
+    .QNTSL_WIDTH             ( QNTSL_WIDTH        ),
     .ACT_WIDTH               ( ACT_WIDTH        ),
     .MAP_WIDTH               ( MAP_WIDTH        ),
     .MAXPAR                  ( MAXPAR           ),
@@ -350,6 +378,8 @@ CCU#(
     .CCUPOL_CfgK             ( CCUPOL_CfgK             ),
     .CCUPOL_CfgNip           ( CCUPOL_CfgNip           ),
     .CCUPOL_CfgChi           ( CCUPOL_CfgChi           ),
+    .CCUPOL_AddrMin          ( CCUPOL_AddrMin          ),
+    .CCUPOL_AddrMax          ( CCUPOL_AddrMax          ),    
     .CCUCTR_Rst              ( CCUCTR_Rst              ),
     .CCUCTR_CfgVld           ( CCUCTR_CfgVld           ),
     .CTRCCU_CfgRdy           ( CTRCCU_CfgRdy           ),
@@ -429,14 +459,44 @@ assign RdPortDatRdy[GLBRDIDX_CTRDST] = CTRGLB_DistIdxRdy;
 assign WrPortUseAddr[GLBWRIDX_CTRDST] = 1'b1;
 assign WrPortAddr[ADDR_WIDTH*GLBWRIDX_CTRDST +: ADDR_WIDTH] = CTRGLB_DistWrAddr;
 
-assign WrPortDat[SRAM_WIDTH*GLBWRIDX_CTRDST +: SRAM_WIDTH] = CTRGLB_DistIdx;
+assign WrPortDat[ (SRAM_WIDTH*MAXPAR)*GLBWRIDX_CTRDST +:  (SRAM_WIDTH*MAXPAR)] = CTRGLB_DistIdx;
 assign WrPortDatVld[GLBWRIDX_CTRDST] = CTRGLB_DistIdxVld;
 assign GLBCTR_DistIdxRdy = WrPortDatRdy[GLBWRIDX_CTRDST];
 
+
+// FPS Writes Mask to GLB
+assign WrPortUseAddr[GLBWRIDX_CTRFMK] = 1'b1;
+assign WrPortAddr[ADDR_WIDTH*GLBWRIDX_CTRFMK +: ADDR_WIDTH] = FPSGLB_MaskWrAddr;
+
+assign WrPortDat[ (SRAM_WIDTH*MAXPAR)*GLBWRIDX_CTRFMK +:  (SRAM_WIDTH*MAXPAR)] = FPSGLB_MaskWrDat;
+assign WrPortDatVld[GLBWRIDX_CTRFMK] = FPSGLB_MaskWrDatVld;
+assign GLBFPS_MaskWrDatRdy = WrPortDatRdy[GLBWRIDX_CTRFMK];
+
+// FPS Reads Mask from GLB
+assign RdPortUseAddr[GLBRDIDX_CTRFMK] = 1'b1;
+assign RdPortAddr[ADDR_WIDTH*GLBRDIDX_CTRFMK +: ADDR_WIDTH] = FPSGLB_MaskRdAddr;
+assign RdPortAddrVld[GLBRDIDX_CTRFMK] = FPSGLB_MaskRdAddrVld;
+assign GLBFPS_MaskRdAddrRdy = RdPortAddrRdy[GLBRDIDX_CTRFMK];
+
+assign GLBFPS_MaskRdDat = RdPortDat[SRAM_WIDTH*GLBRDIDX_CTRFMK +: SRAM_WIDTH];
+assign GLBFPS_MaskRdDatVld = RdPortDatVld[GLBRDIDX_CTRFMK];
+assign RdPortDatRdy[GLBRDIDX_CTRFMK] = FPSGLB_MaskRdDatRdy;
+
+// KNN Reads Mask from GLB
+assign RdPortUseAddr[GLBRDIDX_CTRKMK] = 1'b1;
+assign RdPortAddr[ADDR_WIDTH*GLBRDIDX_CTRKMK +: ADDR_WIDTH] = KNNGLB_MaskRdAddr;
+assign RdPortAddrVld[GLBRDIDX_CTRKMK] = KNNGLB_MaskRdAddrVld;
+assign GLBKNN_MaskRdAddrRdy = RdPortAddrRdy[GLBRDIDX_CTRKMK];
+
+assign GLBKNN_MaskRdDat = RdPortDat[SRAM_WIDTH*GLBRDIDX_CTRKMK +: SRAM_WIDTH];
+assign GLBKNN_MaskRdDatVld = RdPortDatVld[GLBRDIDX_CTRKMK];
+assign RdPortDatRdy[GLBRDIDX_CTRKMK] = KNNGLB_MaskRdDatRdy;
+
+
 // Write MAP
-assign WrPortDat[ADDR_WIDTH*6 +: ADDR_WIDTH] =  CTRGLB_Map;
-assign WrPortDatVld[6] = CTRGLB_MapVld;
-assign GLBCTR_MapRdy = WrPortDatRdy[6];
+assign WrPortDat[(SRAM_WIDTH*MAXPAR)*GLBWRIDX_CTRMAP +:  (SRAM_WIDTH*MAXPAR)] =  CTRGLB_Map;
+assign WrPortDatVld[GLBWRIDX_CTRMAP] = CTRGLB_MapVld;
+assign GLBCTR_MapRdy = WrPortDatRdy[GLBWRIDX_CTRMAP];
 
 CTR#(
     .SRAM_WIDTH         ( SRAM_WIDTH    ),
@@ -467,11 +527,27 @@ CTR#(
     .GLBCTR_DistIdx     ( GLBCTR_DistIdx[0 +: (DISTSQR_WIDTH+IDX_WIDTH)]),
     .GLBCTR_DistIdxVld  ( GLBCTR_DistIdxVld  ),
     .CTRGLB_DistIdxRdy  ( CTRGLB_DistIdxRdy  ),
-
     .CTRGLB_DistWrAddr  ( CTRGLB_DistWrAddr  ),
     .CTRGLB_DistIdx     ( CTRGLB_DistIdx[0 +: (DISTSQR_WIDTH+IDX_WIDTH)]     ),
     .CTRGLB_DistIdxVld  ( CTRGLB_DistIdxVld  ),
     .GLBCTR_DistIdxRdy  ( GLBCTR_DistIdxRdy  ),
+    .KNNGLB_MaskRdAddr   ( KNNGLB_MaskRdAddr    ), 
+    .KNNGLB_MaskRdAddrVld( KNNGLB_MaskRdAddrVld ),
+    .GLBKNN_MaskRdAddrRdy( GLBKNN_MaskRdAddrRdy ),
+    .GLBKNN_MaskRdDat   ( GLBKNN_MaskRdDat    ),
+    .GLBKNN_MaskRdDatVld( GLBKNN_MaskRdDatVld ),
+    .KNNGLB_MaskRdDatRdy   ( KNNGLB_MaskRdDatRdy    ),
+    .FPSGLB_MaskRdAddr   ( FPSGLB_MaskRdAddr    ),
+    .FPSGLB_MaskRdAddrVld( FPSGLB_MaskRdAddrVld ),
+    .GLBFPS_MaskRdAddrRdy( GLBFPS_MaskRdAddrRdy ),
+    .GLBFPS_MaskRdDat    ( GLBFPS_MaskRdDat     ),
+    .GLBFPS_MaskRdDatVld ( GLBFPS_MaskRdDatVld  ),
+    .FPSGLB_MaskRdDatRdy ( FPSGLB_MaskRdDatRdy  ),
+    .FPSGLB_MaskWrAddr   ( FPSGLB_MaskWrAddr    ),
+    .FPSGLB_MaskWrBitEn  ( FPSGLB_MaskWrBitEn   ),// ?????????????????????????????????
+    .FPSGLB_MaskWrDatVld ( FPSGLB_MaskWrDatVld  ),
+    .FPSGLB_MaskWrDat    ( FPSGLB_MaskWrDat     ),
+    .GLBFPS_MaskWrDatRdy ( GLBFPS_MaskWrDatRdy  ),
     .CTRGLB_Map         ( CTRGLB_Map         ),
     .CTRGLB_MapVld      ( CTRGLB_MapVld      ),
     .GLBCTR_MapRdy      ( GLBCTR_MapRdy      )
@@ -487,42 +563,44 @@ assign GLBSYA_WgtVld = RdPortDatVld[GLBRDIDX_SYAWGT];
 assign RdPortDatRdy[GLBRDIDX_SYAWGT] = SYAGLB_WgtRdy;
 
 assign WrPortDat[ (SRAM_WIDTH*MAXPAR)*GLBWRIDX_SYAOFM +: (SRAM_WIDTH*MAXPAR) ] = SYAGLB_Ofm;
-assign WrPortDatVld[GLBWRIDX_SYAOFM] = SYAGLB_OfmVld;
-assign GLBSYA_OfmRdy = WrPortDatRdy[GLBWRIDX_SYAOFM];
+assign WrPortDatVld[GLBWRIDX_SYAOFM] = &SYAGLB_OfmVld; // ????????????????????????????? BUG 4bit to 1 bit
+assign GLBSYA_OfmRdy = {NUM_BANK{WrPortDatRdy[GLBWRIDX_SYAOFM]}};
 
-// SYA #(
-//     .ACT_WIDTH ( ACT_WIDTH), 
-//     .WGT_WIDTH ( ACT_WIDTH), 
-//     .NUM_ROW   ( SYA_NUM_ROW  ), 
-//     .NUM_COL   ( SYA_NUM_COL  ), 
-//     .NUM_BANK  ( SYA_NUM_BANK ), 
-//     .SRAM_WIDTH( SRAM_WIDTH) 
-// )(
-//     .clk            (clk            ),
-//     .rst_n          (rst_n          ),
-//     .CCUSYA_Rst     (CCUSYA_Rst     ),
-//     .CCUSYA_CfgVld  (CCUSYA_CfgVld  ),
-//     .SYACCU_CfgRdy  (SYACCU_CfgRdy  ),
-//     .CCUSYA_CfgMod  (CCUSYA_CfgMod  ),
-//     .CCUSYA_CfgNip  (CCUSYA_CfgNip  ),
-//     .CCUSYA_CfgChi  (CCUSYA_CfgChi  ),
-//     .CCUSYA_CfgScale(CCUSYA_CfgScale),
-//     .CCUSYA_CfgShift(CCUSYA_CfgShift),
-//     .CCUSYA_CfgZp   (CCUSYA_CfgZp   ),
-//     .GLBSYA_Act     (GLBSYA_Act     ), 
-//     .GLBSYA_ActVld  (GLBSYA_ActVld  ),
-//     .SYAGLB_ActRdy  (SYAGLB_ActRdy  ),
-//     .GLBSYA_Wgt     (GLBSYA_Wgt     ),
-//     .GLBSYA_WgtVld  (GLBSYA_WgtVld  ),
-//     .SYAGLB_WgtRdy  (SYAGLB_WgtRdy  ),
-//     .SYAGLB_Ofm     (SYAGLB_Ofm     ),
-//     .SYAGLB_OfmVld  (SYAGLB_OfmVld  ),
-//     .GLBSYA_OfmRdy  (GLBSYA_OfmRdy  )
-// );
+SYA #(
+    .ACT_WIDTH ( ACT_WIDTH      ), 
+    .WGT_WIDTH ( ACT_WIDTH      ), 
+    .NUM_ROW   ( SYA_NUM_ROW    ), 
+    .NUM_COL   ( SYA_NUM_COL    ), 
+    .NUM_BANK  ( SYA_NUM_BANK   ), 
+    .SRAM_WIDTH( SRAM_WIDTH     ),
+    .CHI_WIDTH ( CHN_WIDTH      ),
+    .QNT_WIDTH ( QNTSL_WIDTH    )
+) u_SYA(
+    .clk            (clk            ),
+    .rst_n          (rst_n          ),
+    .CCUSYA_Rst     (CCUSYA_Rst     ),
+    .CCUSYA_CfgVld  (CCUSYA_CfgVld  ),
+    .SYACCU_CfgRdy  (SYACCU_CfgRdy  ),
+    .CCUSYA_CfgMod  (CCUSYA_CfgMod  ),
+    .CCUSYA_CfgNip  (CCUSYA_CfgNip  ),
+    .CCUSYA_CfgChi  (CCUSYA_CfgChi  ),
+    .CCUSYA_CfgScale(CCUSYA_CfgScale),
+    .CCUSYA_CfgShift(CCUSYA_CfgShift),
+    .CCUSYA_CfgZp   (CCUSYA_CfgZp   ),
+    .GLBSYA_Act     (GLBSYA_Act     ), 
+    .GLBSYA_ActVld  (GLBSYA_ActVld  ),
+    .SYAGLB_ActRdy  (SYAGLB_ActRdy  ),
+    .GLBSYA_Wgt     (GLBSYA_Wgt     ),
+    .GLBSYA_WgtVld  (GLBSYA_WgtVld  ),
+    .SYAGLB_WgtRdy  (SYAGLB_WgtRdy  ),
+    .SYAGLB_Ofm     (SYAGLB_Ofm     ),
+    .SYAGLB_OfmVld  (SYAGLB_OfmVld  ),
+    .GLBSYA_OfmRdy  (GLBSYA_OfmRdy  )
+);
 
 assign GLBPOL_Map                                   = RdPortDat[(SRAM_WIDTH*MAXPAR)*GLBRDIDX_POLMAP +: (SRAM_WIDTH*MAXPAR)];
 assign GLBPOL_MapVld                                = RdPortDatVld[GLBRDIDX_POLMAP];
-assign RdPortDatVld[GLBRDIDX_POLMAP]                = POLGLB_MapRdy;
+assign RdPortDatRdy[GLBRDIDX_POLMAP]                = POLGLB_MapRdy;
 
 assign RdPortUseAddr[GLBRDIDX_POLOFM +: POOL_CORE]  = {POOL_CORE{1'b1}};
 assign RdPortAddr[ADDR_WIDTH*GLBRDIDX_POLOFM +: ADDR_WIDTH*POOL_CORE]= POLGLB_Addr;
@@ -555,6 +633,8 @@ POL#(
     .CCUPOL_CfgK          ( CCUPOL_CfgK          ),
     .CCUPOL_CfgNip        ( CCUPOL_CfgNip        ),
     .CCUPOL_CfgChi        ( CCUPOL_CfgChi        ),
+    .CCUPOL_AddrMin       ( CCUPOL_AddrMin       ),
+    .CCUPOL_AddrMax       ( CCUPOL_AddrMax       ),
     .GLBPOL_MapVld        ( GLBPOL_MapVld        ),
     .GLBPOL_Map           ( GLBPOL_Map           ),
     .POLGLB_MapRdy        ( POLGLB_MapRdy        ),

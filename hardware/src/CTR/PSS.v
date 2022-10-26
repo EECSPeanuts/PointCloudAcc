@@ -17,22 +17,26 @@ module PSS #(
     parameter IDX_WIDTH       = 10                ,
     parameter DIST_WIDTH      = 17                ,
     parameter NUM_SORT_CORE   = 8                 ,
-    parameter SRAM_WIDTH      = 256                 
+    parameter SRAM_WIDTH      = 256               ,
+    parameter MASK_ADDR_WIDTH = $clog2(2**IDX_WIDTH*NUM_SORT_CORE/SRAM_WIDTH)
 
     )(
     input                                   clk,
     input                                   rst_n,
     input                                   KNNPSS_Rst  ,
-    input                                   KNNPSS_LopLast      ,
-    input   [2**IDX_WIDTH           -1 : 0] FPSPSS_Mask     ,
-    input                                   FPSPSS_MaskVld  ,
-    output                                  PSSFPS_MaskRdy  ,
+    input                                   KNNPSS_LopLast  ,
     input   [IDX_WIDTH              -1 : 0] KNNPSS_CpIdx    ,
-    // input   CTRPSS_CpIdxVld
-    // output  PSSCTR_CpIdxRdy
-    input   [IDX_WIDTH+DIST_WIDTH   -1 : 0] KNNPSS_Lop      ,  
+    input   [$clog2(SRAM_WIDTH/NUM_SORT_CORE) + DIST_WIDTH+ IDX_WIDTH -1 : 0] KNNPSS_Lop      ,  
     input                                   KNNPSS_LopVld   ,  
-    output                                  PSSKNN_LopRdy   ,  
+    output                                  PSSKNN_LopRdy   ,
+
+    output  [MASK_ADDR_WIDTH        -1 : 0] PSSGLB_MaskRdAddr,
+    output                                  PSSGLB_MaskRdAddrVld,
+    input                                   GLBPSS_MaskRdAddrRdy,
+    input   [SRAM_WIDTH             -1 : 0] GLBPSS_MaskDatOut,
+    input                                   GLBPSS_MaskDatOutVld,
+    output                                  PSSGLB_MaskDatRdy,
+
     output  [SRAM_WIDTH             -1 : 0] PSSCTR_Map      , 
     output                                  PSSCTR_MapVld   , 
     input                                   CTRPSS_MapRdy    
@@ -45,15 +49,18 @@ localparam SORT_LEN        = 2**SORT_LEN_WIDTH;
 // Variable Definition :
 //=====================================================================================================================
 wire [NUM_SORT_CORE         -1 : 0] INS_LopRdy;
-reg  [$clog2(NUM_SORT_CORE)    : 0] addr;
-reg  [2**IDX_WIDTH          -1 : 0] Mask_Array[0 : NUM_SORT_CORE-1];
-
 
 wire [SRAM_WIDTH*NUM_SORT_CORE-1 : 0] PSSMap;
 wire [NUM_SORT_CORE           -1 : 0] INSPSS_IdxVld;
 wire [NUM_SORT_CORE           -1 : 0] PSSINS_IdxRdy;
 wire [(IDX_WIDTH*SORT_LEN)*NUM_SORT_CORE-1 : 0] INSPSS_Idx;
 wire                                  PISO_IN_RDY;
+
+wire                                          s0_rdy;
+reg [IDX_WIDTH+DIST_WIDTH             -1 : 0] PSSINS_Lop;
+reg [$clog2(SRAM_WIDTH/NUM_SORT_CORE) -1 : 0] MaskRAMByteIdx;
+wire [NUM_SORT_CORE                   -1 : 0] PSSINS_LopVld;
+wire [NUM_SORT_CORE                   -1 : 0] INSPSS_LopRdy;
 
 integer int_i;
 //=====================================================================================================================
@@ -64,29 +71,29 @@ integer int_i;
 //=====================================================================================================================
 // Logic Design 1: INSPSS_Idx
 //=====================================================================================================================
-always @(posedge clk or negedge rst_n) begin
-    if(!rst_n) begin
-        for(int_i=0; int_i<NUM_SORT_CORE; int_i=int_i+1) begin
-            Mask_Array[0] <= 0;
-        end
-    end else if (FPSPSS_MaskVld & PSSFPS_MaskRdy) begin
-        Mask_Array[addr] <= FPSPSS_Mask;
-    end
-end
+
+
+// Input SRAM
+assign PSSGLB_MaskRdAddr = KNNPSS_Lop[0 +: IDX_WIDTH]>>$clog2(SRAM_WIDTH/NUM_SORT_CORE); // /(SRAM_WIDTH/NUM_SORT_CORE)
+assign PSSGLB_MaskRdAddrVld = KNNPSS_LopVld & PSSKNN_LopRdy;//
+
+assign PSSKNN_LopRdy = GLBPSS_MaskRdAddrRdy & s0_rdy; // drive 2 loads
+
+
+// PIPE0: Output SRAM
+assign s0_rdy = &(!PSSINS_LopVld | INSPSS_LopRdy); // All == 1
+
+assign PSSGLB_MaskDatRdy = s0_rdy;
 
 always @(posedge clk or negedge rst_n) begin
     if(!rst_n) begin
-        addr <= 0;
-    end else if (KNNPSS_Rst) begin
-        addr <= 0;
-    end else if (FPSPSS_MaskVld & PSSFPS_MaskRdy) begin
-        addr <= addr + 1;
+        PSSINS_Lop <= 0;
+        MaskRAMByteIdx  <= 0;
+    end else if(KNNPSS_LopVld & PSSKNN_LopRdy) begin
+        PSSINS_Lop <= KNNPSS_Lop;
+        MaskRAMByteIdx  <= KNNPSS_Lop[DIST_WIDTH + IDX_WIDTH +: $clog2(SRAM_WIDTH/NUM_SORT_CORE)];
     end
 end
-
-assign PSSFPS_MaskRdy = !addr[$clog2(NUM_SORT_CORE)];
-
-
 
 //=====================================================================================================================
 // Sub-Module :
@@ -94,7 +101,8 @@ assign PSSFPS_MaskRdy = !addr[$clog2(NUM_SORT_CORE)];
 genvar i;
 generate
     for(i=0; i<NUM_SORT_CORE; i=i+1) begin
-        wire                    PSSINS_LopVld;
+
+        assign PSSINS_LopVld[i] = GLBPSS_MaskDatOutVld & GLBPSS_MaskDatOut[NUM_SORT_CORE*MaskRAMByteIdx + i];
         INS#(
             .SORT_LEN_WIDTH   ( SORT_LEN_WIDTH ),
             .IDX_WIDTH       ( IDX_WIDTH ),
@@ -103,28 +111,26 @@ generate
             .clk                 ( clk                 ),
             .rst_n               ( rst_n               ),
             .PSSINS_LopLast      ( KNNPSS_LopLast      ),
-            .PSSINS_Lop          ( KNNPSS_Lop          ),
-            .PSSINS_LopVld       ( PSSINS_LopVld       ),
-            .PSSINS_LopRdy       ( INS_LopRdy[i]       ),
+            .PSSINS_Lop          ( PSSINS_Lop          ),
+            .PSSINS_LopVld       ( PSSINS_LopVld[i]    ),
+            .INSPSS_LopRdy       ( INSPSS_LopRdy[i]    ),
             .INSPSS_Idx          ( INSPSS_Idx[(IDX_WIDTH*SORT_LEN)*i +: (IDX_WIDTH*SORT_LEN)]),
             .INSPSS_IdxVld       ( INSPSS_IdxVld[i]       ),
             .PSSINS_IdxRdy       ( PSSINS_IdxRdy[i]       )
         );
 
-        assign PSSINS_LopVld = Mask_Array[i][KNNPSS_Lop[IDX_WIDTH+DIST_WIDTH -1 -: IDX_WIDTH]];
         assign PSSMap[SRAM_WIDTH*i +: SRAM_WIDTH] = {54'd0, {KNNPSS_CpIdx, INSPSS_Idx[(IDX_WIDTH*SORT_LEN)*i +: (IDX_WIDTH*SORT_LEN)]}};
         
     end
 endgenerate
 
-assign PSSKNN_LopRdy = & INS_LopRdy;
 
 assign PSSINS_IdxRdy = {NUM_SORT_CORE{PISO_IN_RDY}};
 
 PISO#(
     .DATA_IN_WIDTH   ( SRAM_WIDTH*NUM_SORT_CORE  ), // (32+1)*10 /96 = 330 /96 <= 4
     .DATA_OUT_WIDTH  ( SRAM_WIDTH  )
-)U_PISO(
+)u_PISO(
     .CLK       ( clk            ),
     .RST_N     ( rst_n          ),
     .IN_VLD    ( &INSPSS_IdxVld ),
@@ -136,5 +142,6 @@ PISO#(
     .OUT_LAST  (                ),
     .OUT_RDY   ( CTRPSS_MapRdy  )
 );
+
 
 endmodule
